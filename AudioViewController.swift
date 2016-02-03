@@ -4,7 +4,8 @@ import AVFoundation
 
 @objc protocol MusicPlayerUIUpdatedProtocol
 {
-    func musicPlayerInfoDidUpdated(title:String,albume:String,artist:String,ArtWork:UIImage)
+    func musicPlayerInfoDidUpdated(title:String,albume:String,artist:String,ArtWork:UIImage,timeLenght:Float,currentIndex:Int,totalIndex:Int)
+    func musicPlayerTimeDidUpdated(currentTime:Float,totalTime:Float)
     func musicPlayerDidPaused()
     func musicPlayerDidPlayed()
     func musicPlayerUIState(isActive:Bool)
@@ -15,79 +16,36 @@ class MusicPlayer:UIViewController
     var MusicPlayerDelegate:MusicPlayerUIUpdatedProtocol?
     private var player:AVPlayer?
     private var filesUrl:[String] = []
-    private var playInQueue:Bool = false
     private var currentIndex: Int = 0
+    private var paused = true
+    private var uniqueID: String = ""
+    private var updater : CADisplayLink! = nil
         {
         didSet{
-            print("\n--------------------------------")
+            print("\n--------------\(self.currentIndex)---------------")
             if NSClassFromString("MPNowPlayingInfoCenter") != nil {
                 if let Delegate = self.MusicPlayerDelegate
                 {
                     Delegate.musicPlayerUIState(false)
                 }
-                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), {
-                    print("Music index changing: \(self.currentIndex)")
-                    let asset = AVAsset(URL: NSURL(string: self.filesUrl[self.currentIndex])!)
-                    let image:UIImage = UIImage(named: "artwork")!
-                    let albumArt = MPMediaItemArtwork(image: image)
-                    var songInfo = [MPMediaItemPropertyTitle: "Unknown Title",
-                        MPMediaItemPropertyArtist: "Unknown Artist",
-                        AVMetadataCommonKeyAlbumName: "Unknown Albume",
-                        MPMediaItemPropertyArtwork: albumArt]
-                    for item in asset.commonMetadata
-                    {
-                        if let stringValue = item.value as? String {
-                            //                    print("\(item.commonKey) >>> \(stringValue)")
-                            if item.commonKey == AVMetadataCommonKeyTitle {
-                                songInfo[MPMediaItemPropertyTitle] = stringValue
-                            }
-                            if item.commonKey == AVMetadataCommonKeyArtist {
-                                songInfo[MPMediaItemPropertyArtist] = stringValue
-                            }
-                            if item.commonKey == AVMetadataCommonKeyAlbumName {
-                                songInfo[AVMetadataCommonKeyAlbumName] = stringValue
-                            }
-                        }
-                        if let dataValue = item.value as? NSData {
-                            //                    print(item.commonKey)
-                            if item.commonKey == AVMetadataCommonKeyArtwork {
-                                let img = UIImage(data: dataValue)
-                                songInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(image: img!)
-                            }
-                        }
-                    }
-                    MPNowPlayingInfoCenter.defaultCenter().nowPlayingInfo = songInfo as [String : AnyObject]
-                    if let Delegate = self.MusicPlayerDelegate
-                    {
-                        let title = songInfo[MPMediaItemPropertyTitle] as! String
-                        let albume = songInfo[AVMetadataCommonKeyAlbumName] as! String
-                        let artist = songInfo[MPMediaItemPropertyArtist] as! String
-                        let artWork = (songInfo[MPMediaItemPropertyArtwork] as! MPMediaItemArtwork).imageWithSize(CGSize(width: 400, height: 400))
-                        Delegate.musicPlayerInfoDidUpdated(title,albume: albume,artist: artist,ArtWork: artWork!)
-                    }
-                    if self.playInQueue
-                    {
-                        self.playInQueue = false
-                        self.play(true)
-                    }
-                    else
-                    {
-                        if let Delegate = self.MusicPlayerDelegate
-                        {
-                            Delegate.musicPlayerUIState(true)
-                        }
-                    }
-                    print("Music index changed: \(self.currentIndex)")
-                })
+                defaultUI()
             }
             else
             {
                 print("Shit!!!")
             }
-            print("*****************************\n")
         }
     }
-    var playerIsActive: Bool{
+    var playerIsAvailabe: Bool{
+        get{
+            if player == nil
+            {
+                return false
+            }
+            return true
+        }
+    }
+    var musicIsPlaying: Bool{
         get{
             if player == nil
             {
@@ -97,54 +55,86 @@ class MusicPlayer:UIViewController
             {
                 return false
             }
+            if paused
+            {
+                return true
+            }
             return true
         }
     }
     
-    func SetPlayerItems(urls: [String])
-    {
-        if let Delegate = self.MusicPlayerDelegate
+    func trackAudio() {
+        if let p = player, let currentItem = p.currentItem
         {
-            Delegate.musicPlayerUIState(false)
-        }
-        self.filesUrl = urls
-        self.currentIndex = 0
-        self.player = AVPlayer(playerItem: AVPlayerItem(URL: NSURL(string: urls[0])!))
-    }
-    
-    override func remoteControlReceivedWithEvent(event: UIEvent?) {
-        if event!.type == UIEventType.RemoteControl {
-            
-            if event!.subtype == UIEventSubtype.RemoteControlPlay {
-                print("received remote play")
-                NSNotificationCenter.defaultCenter().postNotificationName("AudioPlayerIsPlaying", object: nil)
-                player!.play()
-                return
-            }
-            if event!.subtype == UIEventSubtype.RemoteControlPause {
-                print("received remote pause")
-                NSNotificationCenter.defaultCenter().postNotificationName("AudioPlayerIsNotPlaying", object: nil)
-                player!.pause()
-                return
-            }
-            if event!.subtype == UIEventSubtype.RemoteControlNextTrack
+            let sec = currentItem.currentTime().seconds
+            let total = currentItem.duration.seconds
+            if sec == total
             {
-                print("received next")
                 stop()
                 next()
                 return
             }
-            if event!.subtype == UIEventSubtype.RemoteControlPreviousTrack
+            if sec < total && sec > 10 && !musicIsPlaying && !self.paused
             {
-                print("received previus")
-                stop()
-                prev()
-                return
+                play()
             }
-            if event!.subtype == UIEventSubtype.RemoteControlTogglePlayPause{
-                print("received toggle")
-                return
+            print("trackAudio: \(sec) from \(total)")
+            if let Delegate = self.MusicPlayerDelegate
+            {
+                Delegate.musicPlayerTimeDidUpdated(Float(sec),totalTime: Float(total))
             }
+            
+        }
+        else
+        {
+            print("trackAudio faild")
+        }
+    }
+    
+    func MakeUrl(index:Int) -> String
+    {
+        var rawUrl = self.filesUrl[index]
+        if rawUrl.containsString(" ")
+        {
+            rawUrl = rawUrl.stringByAddingPercentEncodingWithAllowedCharacters( NSCharacterSet.URLQueryAllowedCharacterSet())!
+        }
+        return rawUrl
+    }
+    
+    func SetPlayerItems(urls: [String],uniqueId:String)
+    {
+        if self.uniqueID == uniqueId
+        {
+            return
+        }
+        if let Delegate = self.MusicPlayerDelegate
+        {
+            Delegate.musicPlayerUIState(false)
+        }
+        if self.updater == nil
+        {
+            self.updater = CADisplayLink(target: self, selector: Selector("trackAudio"))
+            self.updater.frameInterval = 10
+            self.updater.addToRunLoop(NSRunLoop.currentRunLoop(), forMode: NSRunLoopCommonModes)
+        }
+        self.uniqueID = uniqueId
+        self.filesUrl = urls
+        self.currentIndex = 0
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),{
+            if let url = NSURL(string: self.MakeUrl(0))
+            {
+                let item = AVPlayerItem(URL: url)
+                self.player = AVPlayer(playerItem: item)
+                self.updateInfoUI(self.player!.currentItem!.asset)
+            }
+        })
+    }
+    
+    func seekTime(totalPercent:Float)
+    {
+        if (playerIsAvailabe && musicIsPlaying) {
+            let second = self.player!.currentItem!.duration.seconds * Double(totalPercent)
+            self.player!.seekToTime(CMTime(seconds: second, preferredTimescale: 1))
         }
     }
     
@@ -157,36 +147,93 @@ class MusicPlayer:UIViewController
             AVMetadataCommonKeyAlbumName: "Unknown Albume",
             MPMediaItemPropertyArtwork: albumArt]
         MPNowPlayingInfoCenter.defaultCenter().nowPlayingInfo = songInfo as [String : AnyObject]
+        if let Delegate = self.MusicPlayerDelegate
+        {
+            let title = songInfo[MPMediaItemPropertyTitle] as! String
+            let albume = songInfo[AVMetadataCommonKeyAlbumName] as! String
+            let artist = songInfo[MPMediaItemPropertyArtist] as! String
+            let artWork = (songInfo[MPMediaItemPropertyArtwork] as! MPMediaItemArtwork).imageWithSize(CGSize(width: 400, height: 400))
+            Delegate.musicPlayerInfoDidUpdated(title,albume: albume,artist: artist,ArtWork: artWork!,timeLenght: 0,currentIndex: 1,totalIndex: 1)
+        }
+        
+    }
+    
+    func updateInfoUI(asset:AVAsset)
+    {
+        let image:UIImage = UIImage(named: "artwork")!
+        let albumArt = MPMediaItemArtwork(image: image)
+        let timeLenght = Float(asset.duration.seconds)
+        var songInfo = [MPMediaItemPropertyTitle: "Unknown Title",
+            MPMediaItemPropertyArtist: "Unknown Artist",
+            AVMetadataCommonKeyAlbumName: "Unknown Albume",
+            MPMediaItemPropertyArtwork: albumArt,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: NSNumber(float: 0),
+            MPNowPlayingInfoPropertyPlaybackRate: Double(1),
+            MPMediaItemPropertyPlaybackDuration: NSNumber(float: timeLenght)]
+        for item in asset.commonMetadata
+        {
+            if let stringValue = item.value as? String {
+                if item.commonKey == AVMetadataCommonKeyTitle {
+                    songInfo[MPMediaItemPropertyTitle] = stringValue
+                }
+                if item.commonKey == AVMetadataCommonKeyArtist {
+                    songInfo[MPMediaItemPropertyArtist] = stringValue
+                }
+                if item.commonKey == AVMetadataCommonKeyAlbumName {
+                    songInfo[AVMetadataCommonKeyAlbumName] = stringValue
+                }
+            }
+            if let dataValue = item.value as? NSData {
+                if item.commonKey == AVMetadataCommonKeyArtwork {
+                    let img = UIImage(data: dataValue)
+                    songInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(image: img!)
+                }
+            }
+        }
+        MPNowPlayingInfoCenter.defaultCenter().nowPlayingInfo = songInfo as [String : AnyObject]
+        if let Delegate = self.MusicPlayerDelegate
+        {
+            let title = songInfo[MPMediaItemPropertyTitle] as! String
+            let albume = songInfo[AVMetadataCommonKeyAlbumName] as! String
+            let artist = songInfo[MPMediaItemPropertyArtist] as! String
+            let artWork = (songInfo[MPMediaItemPropertyArtwork] as! MPMediaItemArtwork).imageWithSize(CGSize(width: 400, height: 400))
+            Delegate.musicPlayerInfoDidUpdated(title,albume: albume,artist: artist,ArtWork: artWork!,timeLenght: timeLenght,currentIndex: self.currentIndex + 1,totalIndex: self.filesUrl.count)
+            Delegate.musicPlayerUIState(true)
+        }
     }
     
     func next()
     {
-        defaultUI()
-        if currentIndex < filesUrl.count - 1
+        if self.currentIndex < self.filesUrl.count - 1
         {
-            currentIndex++
+            self.currentIndex++
         }
         else
         {
-            currentIndex = 0
+            self.currentIndex = 0
         }
-        playInQueue = true
-        self.player = AVPlayer(playerItem: AVPlayerItem(URL: NSURL(string: self.filesUrl[currentIndex])!))
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),{
+            self.player = AVPlayer(playerItem: AVPlayerItem(URL: NSURL(string: self.MakeUrl(self.currentIndex))!))
+            self.updateInfoUI(self.player!.currentItem!.asset)
+            self.play()
+        })
     }
     
     func prev()
     {
-        defaultUI()
-        if currentIndex > 0
+        if self.currentIndex > 0
         {
-            currentIndex--
+            self.currentIndex--
         }
         else
         {
-            currentIndex = filesUrl.count - 1
+            self.currentIndex = self.filesUrl.count - 1
         }
-        playInQueue = true
-        self.player = AVPlayer(playerItem: AVPlayerItem(URL: NSURL(string: self.filesUrl[currentIndex])!))
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),{
+            self.player = AVPlayer(playerItem: AVPlayerItem(URL: NSURL(string: self.filesUrl[self.currentIndex])!))
+            self.updateInfoUI(self.player!.currentItem!.asset)
+            self.play()
+        })
     }
     
     func stop()
@@ -208,62 +255,41 @@ class MusicPlayer:UIViewController
         
     }
     
-    override func observeValueForKeyPath(keyPath: String?, ofObject object: AnyObject?, change: [String : AnyObject]?, context: UnsafeMutablePointer<Void>) {
-        print("keyPath:\(keyPath)")
-        if let obj = object
+    func pause()
+    {
+        if player != nil
         {
-            print("obj: \(obj)")
+            player!.pause()
+            self.paused = true
+            if let Delegate = self.MusicPlayerDelegate
+            {
+                Delegate.musicPlayerDidPaused()
+            }
         }
-        for ch in change!
-        {
-            print("change in \(ch.0): \(ch.1)")
-        }
-        print("context: \(context)")
     }
     
-    func play(nextOrPrev:Bool)
+    func play()
     {
-        UIApplication.sharedApplication().beginReceivingRemoteControlEvents()
-        if player != nil && !nextOrPrev
-        {
-            if player!.rate == 0
-            {
-                player!.play()
-                if let Delegate = self.MusicPlayerDelegate
-                {
-                    Delegate.musicPlayerDidPlayed()
-                }
-            }
-            else
-            {
-                player!.pause()
-                if let Delegate = self.MusicPlayerDelegate
-                {
-                    Delegate.musicPlayerDidPaused()
-                }
-            }
-            return
-        }
-//        if player == nil && !nextOrPrev
-//        {
-//            if let Delegate = self.MusicPlayerDelegate
-//            {
-//                Delegate.musicPlayerDidPaused()
-//            }
-//        }
         print("start play")
-        player!.play()
-        do
+        if let p = self.player
         {
-            print("Receiving remote control events")
-            try AVAudioSession.sharedInstance().setCategory(AVAudioSessionCategoryPlayback, withOptions: [])
-            try AVAudioSession.sharedInstance().setActive(true)
+            p.play()
+            self.paused = false
+            if let Delegate = self.MusicPlayerDelegate
+            {
+                Delegate.musicPlayerDidPlayed()
+            }
+            do
+            {
+                print("Receiving remote control events")
+                try AVAudioSession.sharedInstance().setCategory(AVAudioSessionCategoryPlayback, withOptions: [])
+                try AVAudioSession.sharedInstance().setActive(true)
+            }
+            catch
+            {
+                print("Audio Session error.")
+            }
         }
-        catch
-        {
-            print("Audio Session error.")
-        }
-        
         if let Delegate = self.MusicPlayerDelegate
         {
             Delegate.musicPlayerUIState(true)
@@ -276,6 +302,7 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
     static let sharedInstance = MusicPlayer()
     
     var buttonPlay: UIButton?
+    var buttonPause: UIButton?
     var buttonNext: UIButton?
     var buttonPrev: UIButton?
     var imgArtWork: UIImageView?
@@ -284,7 +311,12 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
     var lblTitle: UILabel?
     var lblAlbume: UILabel?
     var lblArtist: UILabel?
+    var sldSeek: UISlider?
+    var lblTimeCurrent: UILabel?
+    var lblTimeTotal: UILabel?
     var loader: UIActivityIndicatorView?
+    var navItem: UINavigationItem?
+    
     
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -298,7 +330,6 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         super.viewDidLoad()
         
         print("viewDidLoad")
-        self.title = ""
         self.view.backgroundColor = UIColor.ParseHex(MSGlobal.collors.backgroundApp)
         self.view.tintColor = UIColor.ParseHex(MSGlobal.collors.texts)
         
@@ -306,7 +337,7 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         let height = MSGlobal.UINavigationBarHeight
         let w = Int(self.view.frame.width)
         let maxW = min(w, 300)
-        let maxH = 120
+        let maxH = 180
         
         imgArtWork = UIImageView()
         if let art = imgArtWork {
@@ -352,29 +383,37 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         }
         
         let canvas = UIView(frame: CGRect(x: (w - maxW) / 2, y: Int(self.view.frame.height) - maxH, width: maxW, height: maxH))
-        canvas.backgroundColor = UIColor.redColor()
+//        canvas.backgroundColor = UIColor.redColor()
         self.view.addSubview(canvas)
         
         buttonPlay = UIButton(type: .System)
         if let Play = buttonPlay{
-            Play.frame = CGRect(x: (maxW / 2) + 5 - (maxH / 2), y: 5, width: maxH - 10, height:  maxH - 10)
+            Play.frame = CGRect(x: (maxW / 2) + 30 - (maxH / 2), y: 60, width: maxH - 60, height:  maxH - 60)
             Play.setImage(UIImage(named: "musicPlay"), forState: .Normal)
-//            Play.setTitle("Play", forState: .Normal)
             Play.addTarget(self,
                 action: "playItem:",
                 forControlEvents: .TouchUpInside)
             canvas.addSubview(Play)
         }
         
+        buttonPause = UIButton(type: .System)
+        if let Pause = buttonPause{
+            Pause.frame = CGRect(x: (maxW / 2) + 30 - (maxH / 2), y: 60, width: maxH - 60, height:  maxH - 60)
+            Pause.setImage(UIImage(named: "musicPause"), forState: .Normal)
+            Pause.addTarget(self,
+                action: "pauseItem:",
+                forControlEvents: .TouchUpInside)
+            canvas.addSubview(Pause)
+        }
+        
         loader = UIActivityIndicatorView()
-        loader!.frame = CGRect(x: (maxW / 2) + 5 - (maxH / 2), y: 5, width: maxH - 10, height:  maxH - 10)
+        loader!.frame = CGRect(x: (maxW / 2) + 30 - (maxH / 2), y: 60, width: maxH - 60, height:  maxH - 60)
         canvas.addSubview(loader!)
         
         buttonNext = UIButton(type: .System)
         if let next = buttonNext{
-            next.frame = CGRect(x: maxW - maxH + 20 , y: 20, width:  maxH - 40, height:  maxH - 40)
+            next.frame = CGRect(x: maxW - maxH + 100 , y: 75, width:  maxH - 100, height:  maxH - 100)
             next.setImage(UIImage(named: "musicNext"), forState: .Normal)
-//            stopPlaying.setTitle("Next", forState: .Normal)
             next.addTarget(self,
                 action: "nextItem:",
                 forControlEvents: .TouchUpInside)
@@ -383,55 +422,79 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         
         buttonPrev = UIButton(type: .System)
         if let prev = buttonPrev{
-            prev.frame = CGRect(x: 20, y: 20, width:  maxH - 40, height:  maxH - 40)
+            prev.frame = CGRect(x: 0, y: 75, width:  maxH - 100, height:  maxH - 100)
             prev.setImage(UIImage(named: "musicPrev"), forState: .Normal)
-//            stopPlaying.setTitle("Prev", forState: .Normal)
             prev.addTarget(self,
                 action: "prevItem:",
                 forControlEvents: .TouchUpInside)
             canvas.addSubview(prev)
         }
-//        play()
         
+        
+        let timeCanvas = UIView(frame: CGRect(x: 0, y: Int(self.view.frame.height) - maxH, width: Int(self.view.frame.width), height: 50))
+        timeCanvas.backgroundColor = UIColor.ParseHex("#000000", alpha: 0.5)
+        self.view.addSubview(timeCanvas)
+        
+        lblTimeCurrent = UILabel()
+        lblTimeCurrent!.text = "--:--"
+        lblTimeCurrent!.textAlignment = .Center
+        lblTimeCurrent!.textColor = UIColor.ParseHex(MSGlobal.collors.texts)
+        lblTimeCurrent!.frame = CGRect(x: 0, y: 15 , width: 40, height: 20)
+        lblTimeCurrent!.font = UIFont(name: MSGlobal.font.fontName, size: 14)
+        timeCanvas.addSubview(lblTimeCurrent!)
+        
+        lblTimeTotal = UILabel()
+        lblTimeTotal!.text = "--:--"
+        lblTimeTotal!.textAlignment = .Center
+        lblTimeTotal!.textColor = UIColor.ParseHex(MSGlobal.collors.texts)
+        lblTimeTotal!.frame = CGRect(x: self.view.frame.width - 40 , y: 15 , width: 40, height: 20)
+        lblTimeTotal!.font = UIFont(name: MSGlobal.font.fontName, size: 14)
+        timeCanvas.addSubview(lblTimeTotal!)
+        
+        sldSeek = UISlider(frame: CGRect(x: 40, y: 20, width: self.view.frame.width - 80, height: 10))
+        sldSeek!.minimumValue = 0
+        sldSeek!.maximumValue = 100
+        sldSeek!.addTarget(self, action: "sliderValueChanged:", forControlEvents: UIControlEvents.ValueChanged)
+        timeCanvas.addSubview(sldSeek!)
         
         navigationBar = UINavigationBar(frame: CGRect(x: 0, y: 0, width: w, height: height))
         navigationBar.delegate = self;
         
-        // Create a navigation item with a title
-        let navigationItem = UINavigationItem()
-        navigationItem.title = ""
+        navItem = UINavigationItem()
+        navItem?.title = ""
         
-        // Create left and right button for navigation item
         var backButton =  UIBarButtonItem(image: UIImage(named:"back-ltr"), landscapeImagePhone: UIImage(named:"back-ltr"), style: UIBarButtonItemStyle.Plain, target: self, action: "cb_back:")
         if MSGlobal.setting.language.direction == .R2L
         {
             backButton = UIBarButtonItem(image: UIImage(named:"back-rtl"), landscapeImagePhone: UIImage(named:"back-rtl"), style: UIBarButtonItemStyle.Plain, target: self, action: "cb_back:")
-            navigationItem.rightBarButtonItem = backButton
+            navItem?.rightBarButtonItem = backButton
         }
         else
         {
-             navigationItem.leftBarButtonItem = backButton
+             navItem?.leftBarButtonItem = backButton
         }
         
         AudioViewController.sharedInstance.MusicPlayerDelegate = self
         
-        navigationBar.items = [navigationItem]
+        navigationBar.items = [navItem!]
         view.addSubview(navigationBar)
         
         MSTools.updateNavigatorController2(self.navigationBar, background: MSGlobal.collors.actionBarBackground, text: MSGlobal.collors.actionBarText)
         
-        let isActive = AudioViewController.sharedInstance.playerIsActive
-        if isActive
+        let isPlaying = AudioViewController.sharedInstance.musicIsPlaying
+        if isPlaying
         {
-            buttonPlay?.setImage(UIImage(named: "musicPause"), forState: .Normal)
+            musicPlayerDidPlayed()
         }
         else
         {
-            buttonPlay?.setImage(UIImage(named: "musicPlay"), forState: .Normal)
+            musicPlayerDidPaused()
         }
+        let isActive = AudioViewController.sharedInstance.playerIsAvailabe
         buttonNext?.enabled = isActive
         buttonPrev?.enabled = isActive
         buttonPlay?.enabled = isActive
+        buttonPause?.enabled = isActive
         loader?.hidden = isActive
         if isActive
         {
@@ -443,14 +506,19 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         }
     }
     
+    func sliderValueChanged(sender: UISlider) {
+//        print("time changed: \(sender.value)")
+        AudioViewController.sharedInstance.seekTime(sender.value / 100)
+    }
+    
     func musicPlayerDidPaused() {
-        buttonPlay?.setImage(UIImage(named: "musicPlay"), forState: .Normal)
-        buttonPlay?.setNeedsDisplay()
+        buttonPlay?.hidden = false
+        buttonPause?.hidden = true
     }
     
     func musicPlayerDidPlayed() {
-        buttonPlay?.setImage(UIImage(named: "musicPause"), forState: .Normal)
-        buttonPlay?.setNeedsDisplay()
+        buttonPause?.hidden = false
+        buttonPlay?.hidden = true
     }
     
     func musicPlayerUIState(isActive: Bool) {
@@ -460,9 +528,7 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
                 self.buttonNext?.enabled = isActive
                 self.buttonPrev?.enabled = isActive
                 self.buttonPlay?.enabled = isActive
-                self.buttonNext?.setNeedsDisplay()
-                self.buttonPrev?.setNeedsDisplay()
-                self.buttonPlay?.setNeedsDisplay()
+                self.buttonPause?.enabled = isActive
                 self.loader?.hidden = isActive
                 if isActive
                 {
@@ -472,41 +538,52 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
                 {
                     self.loader!.startAnimating()
                 }
-                self.loader?.setNeedsDisplay()
             })
         }
     
-    func musicPlayerInfoDidUpdated(title: String, albume: String, artist: String, ArtWork: UIImage) {
-        print("update UI")
-        lblTitle?.text = title
-        lblAlbume?.text = albume
-        lblArtist?.text = artist
-        imgArt?.image = ArtWork
-        imgArtWork?.image = ArtWork
-        lblTitle?.setNeedsDisplay()
-        lblAlbume?.setNeedsDisplay()
-        lblArtist?.setNeedsDisplay()
-        imgArt?.setNeedsDisplay()
-        imgArtWork?.setNeedsDisplay()
+    func musicPlayerInfoDidUpdated(title: String, albume: String, artist: String, ArtWork: UIImage, timeLenght: Float, currentIndex: Int, totalIndex: Int) {
+        print("update UI: Info")
+        dispatch_async(dispatch_get_main_queue(),
+            {
+                self.lblTitle?.text = title
+                self.lblAlbume?.text = albume
+                self.lblArtist?.text = artist
+                self.imgArt?.image = ArtWork
+                self.imgArtWork?.image = ArtWork
+                self.sldSeek?.value = 0
+                self.lblTimeCurrent?.text = self.makeTimeString(0)
+                self.lblTimeTotal?.text = self.makeTimeString(timeLenght)
+                self.navItem?.title = "\(currentIndex)/\(totalIndex)"
+            })
+    }
+    
+    func musicPlayerTimeDidUpdated(currentTime: Float, totalTime: Float) {
+        let percent = (currentTime / totalTime) * 100
+//        print("update UI: Time \(percent)")
+        dispatch_async(dispatch_get_main_queue(), {
+                self.sldSeek?.value = percent
+                self.lblTimeCurrent?.text = self.makeTimeString(currentTime)
+        })
     }
     
     func playItem(sender: UIButton)
     {
-        AudioViewController.sharedInstance.play(false)
+        AudioViewController.sharedInstance.play()
+    }
+    
+    func pauseItem(sender: UIButton)
+    {
+        AudioViewController.sharedInstance.pause()
     }
     
     func nextItem(sender: UIButton)
     {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),{
-            AudioViewController.sharedInstance.next()
-        })
+        AudioViewController.sharedInstance.next()
     }
     
     func prevItem(sender: UIButton)
     {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),{
-            AudioViewController.sharedInstance.prev()
-        })
+        AudioViewController.sharedInstance.prev()
     }
     
     func cb_back(sender: UIButton)
@@ -516,7 +593,16 @@ class AudioViewController: UIViewController,UINavigationBarDelegate,MusicPlayerU
         })
     }
     
-    
+    func makeTimeString(value:Float) -> String
+    {
+        if value == 0 || value.isNaN
+        {
+            return "00:00"
+        }
+        let min = (Int)(value / 60)
+        let sec = (Int)(value % 60)
+        return "\(min.format("02")):\(sec.format("02"))"
+    }
     
     
 }
