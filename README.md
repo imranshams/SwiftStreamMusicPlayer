@@ -11,9 +11,10 @@ Features:
  - Ability to show time and seek time (tap on a line to seek specific time)
  
  
-# How to use
+## How to use
  You can use this player in any place of your code. It is possible to use without UI or in background
 
+```
 var files: [String] = ["http url 1 of a mp3 file","http url 2 of a mp3 file"]
 // unique id used to detect playlist items
 var uniqueID = ""
@@ -25,5 +26,5 @@ AudioViewController.sharedInstance.SetPlayerItems(files,uniqueId: uniqueID)
 let appDelegate : AppDelegate = UIApplication.sharedApplication().delegate as! AppDelegate
 let vc = AudioViewController()
 appDelegate.window!.rootViewController.presentViewController(vc, animated: true, completion: nil)
-
+```
 
